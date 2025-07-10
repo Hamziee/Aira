@@ -5,24 +5,79 @@ import os
 from dotenv import load_dotenv
 from database import Database
 from anilist_api import AniListAPI
+from typing import Dict
+import time
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+DONATOR_SKU_ID = os.getenv('DONATOR_SKU_ID')
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.message_content = True
+intents.guilds = True
+intents.guild_messages = True
+
+bot = commands.Bot(
+    command_prefix='!',
+    intents=intents
+)
 db = Database()
 anilist = AniListAPI()
+
+donator_cache: Dict[int, tuple[bool, float]] = {}
+CACHE_DURATION = 300
+
+async def is_donator_guild(guild_id: int) -> bool:
+    current_time = time.time()
+    
+    if guild_id in donator_cache:
+        status, timestamp = donator_cache[guild_id]
+        if current_time - timestamp < CACHE_DURATION:
+            return status
+    
+    try:
+        if not DONATOR_SKU_ID:
+            return False
+
+        route = discord.http.Route('GET', f'/applications/{bot.application_id}/entitlements')
+        try:
+            all_entitlements = await bot.http.request(route)
+            
+            guild_entitlements = [
+                e for e in all_entitlements 
+                if str(e.get('guild_id')) == str(guild_id) and 
+                str(e.get('sku_id')) == str(DONATOR_SKU_ID) and 
+                not e.get('deleted', False)
+            ]
+            
+            is_donator = len(guild_entitlements) > 0
+            donator_cache[guild_id] = (is_donator, current_time)
+            return is_donator
+            
+        except discord.NotFound:
+            donator_cache[guild_id] = (False, current_time)
+            return False
+            
+    except Exception as e:
+        print(f"Error checking donator status: {str(e)}")
+        return False
+
+async def set_donator_footer(embed: discord.Embed, guild_id: int):
+    is_donator = await is_donator_guild(guild_id)
+    if is_donator:
+        embed.set_footer(text="✨ Donator Server")
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
+    print(f'Bot Application ID: {bot.application_id}')
+    print(f'Invite URL: https://discord.com/api/oauth2/authorize?client_id={bot.application_id}&permissions=277025729600&scope=bot%20applications.commands%20applications.entitlements')
     await db.init_db()
     await bot.tree.sync()
     if not check_new_episodes.is_running():
         check_new_episodes.start()
 
-@bot.tree.command(name='subscribe', description='Subscribe to notifications for new episodes of an anime.')
+@bot.tree.command(name='subscribe', description='Subscribe this channel to notifications for new episodes of an anime.')
 async def subscribe(interaction: discord.Interaction, anime_name: str):
     await interaction.response.defer()
     anime_list = anilist.search_anime(anime_name)
@@ -37,7 +92,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
         
         subs = await db.get_channel_subscriptions(channel_id)
         if any(sub['id'] == anime['id'] for sub in subs):
-            await interaction.followup.send(f"You are already subscribed to {anime['title']['romaji']}.")
+            await interaction.followup.send(f"This channel is already subscribed to {anime['title']['romaji']}.")
             return
 
         await db.add_subscription(
@@ -48,8 +103,8 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
         )
 
         embed = discord.Embed(
-            title="✅ Subscription Added!",
-            description=f"You will now receive notifications for new episodes of {anime['title']['romaji']}",
+            title="✅ Channel Subscription Added!",
+            description=f"This channel will now receive notifications for new episodes of {anime['title']['romaji']}",
             color=discord.Color.green()
         )
 
@@ -72,6 +127,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
         if anime.get('genres'):
             embed.add_field(name="Genres", value=", ".join(anime['genres'][:3]), inline=True)
 
+        await set_donator_footer(embed, interaction.guild_id)
         await interaction.followup.send(embed=embed)
     else:
         select = discord.ui.Select(
@@ -98,7 +154,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
                 subs = await db.get_channel_subscriptions(channel_id)
                 if any(sub['id'] == selected_anime['id'] for sub in subs):
                     await select_interaction.response.edit_message(
-                        content=f"You are already subscribed to {selected_anime['title']['romaji']}.",
+                        content=f"This channel is already subscribed to {selected_anime['title']['romaji']}.",
                         view=None
                     )
                     return
@@ -111,8 +167,8 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
                 )
 
                 embed = discord.Embed(
-                    title="✅ Subscription Added!",
-                    description=f"You will now receive notifications for new episodes of {selected_anime['title']['romaji']}",
+                    title="✅ Channel Subscription Added!",
+                    description=f"This channel will now receive notifications for new episodes of {selected_anime['title']['romaji']}",
                     color=discord.Color.green()
                 )
 
@@ -147,6 +203,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
                         inline=True
                     )
 
+                await set_donator_footer(embed, interaction.guild_id)
                 await select_interaction.response.edit_message(embed=embed, view=None)
 
         select.callback = select_callback
@@ -161,8 +218,8 @@ async def list_anime(interaction: discord.Interaction):
     
     if subscriptions:
         embed = discord.Embed(
-            title="📺 Anime Subscriptions",
-            description="Here are your current subscriptions:",
+            title="📺 Channel Subscriptions",
+            description="Here are the current anime subscriptions for this channel:",
             color=discord.Color.blue()
         )
 
@@ -185,24 +242,25 @@ async def list_anime(interaction: discord.Interaction):
                     inline=False
                 )
 
+        await set_donator_footer(embed, interaction.guild_id)
         await interaction.response.send_message(embed=embed)
     else:
         await interaction.response.send_message(
-            "There are no anime subscriptions in this channel.",
+            "This channel has no anime subscriptions.",
             ephemeral=True
         )
 
-@bot.tree.command(name='unsubscribe', description='Stop notifications for an anime.')
+@bot.tree.command(name='unsubscribe', description='Stop notifications for an anime in this channel.')
 async def unsubscribe(interaction: discord.Interaction, anime_name: str):
     channel_id = str(interaction.channel.id)
     if await db.remove_subscription_by_title(channel_id, anime_name):
         await interaction.response.send_message(
-            f"Successfully unsubscribed from {anime_name}.",
+            f"Successfully unsubscribed this channel from {anime_name}.",
             ephemeral=True
         )
     else:
         await interaction.response.send_message(
-            f"Could not find a subscription for {anime_name}.",
+            f"Could not find a subscription for {anime_name} in this channel.",
             ephemeral=True
         )
 
@@ -211,7 +269,7 @@ async def unsubscribe_all(interaction: discord.Interaction):
     channel_id = str(interaction.channel.id)
     count = await db.remove_all_subscriptions(channel_id)
     await interaction.response.send_message(
-        f"Successfully unsubscribed from {count} anime.",
+        f"Successfully removed all {count} anime subscriptions from this channel.",
         ephemeral=True
     )
 
@@ -225,19 +283,21 @@ async def about(interaction: discord.Interaction):
 
     embed.add_field(
         name="How Notifications Work",
-        value="The bot checks for new episodes every 10 minutes. When a new episode is found for an anime you are subscribed to, "
-              "it will send a notification in the channel where you used the /subscribe command.",
+        value="The bot checks for new episodes every minute for premium servers and every 10 minutes for free servers. "
+              "When a new episode is found for an anime that a channel is subscribed to, "
+              "it will send a notification in that channel.",
         inline=False
     )
 
     embed.add_field(
         name="Commands",
         value="""
-• `/subscribe [anime_name]` - Subscribes to an anime for notifications in the current channel.
-• `/unsubscribe [anime_name]` - Unsubscribes from a specific anime in the current channel.
-• `/unsubscribe_all` - Unsubscribes from all anime in the current channel.
-• `/list` - Shows all the anime you are subscribed to in the current channel.
-• `/about` - Shows this message.
+• `/subscribe [anime_name]` - Subscribe this channel to notifications for an anime
+• `/unsubscribe [anime_name]` - Unsubscribe this channel from notifications for a specific anime
+• `/unsubscribe_all` - Remove all anime subscriptions from this channel
+• `/list` - Show all anime subscriptions in this channel
+• `/donator_status` - Check this server's donator status
+• `/about` - Show this message
         """,
         inline=False
     )
@@ -245,7 +305,7 @@ async def about(interaction: discord.Interaction):
     embed.add_field(
         name="Permissions",
         value="By default, only users with the Manage Channels permission can use the /subscribe, /unsubscribe, and "
-              "/unsubscribe_all commands. However, a server administrator can customize these permissions:",
+              "/unsubscribe_all commands in a channel. However, a server administrator can customize these permissions:",
         inline=False
     )
 
@@ -272,30 +332,96 @@ async def about(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=1)
 async def check_new_episodes():
-    all_subscriptions = await db.get_all_subscriptions()
-    
-    for channel_id, subs in all_subscriptions.items():
-        for sub in subs:
-            anime_data = anilist.get_anime_details(sub['id'])
-            if not anime_data:
+    try:
+        all_subscriptions = await db.get_all_subscriptions()
+        
+        for channel_id, subscriptions in all_subscriptions.items():
+            try:
+                channel = bot.get_channel(int(channel_id))
+                if not channel:
+                    continue
+
+                is_donator = await is_donator_guild(channel.guild.id)
+                
+                if not is_donator and check_new_episodes.current_loop % 10 != 0:
+                    continue
+                    
+                for sub in subscriptions:
+                    try:
+                        anime_data = anilist.get_anime_details(sub['id'])
+                        if not anime_data:
+                            print(f"No anime data found for ID {sub['id']}")
+                            continue
+
+                        next_episode = anime_data.get('nextAiringEpisode', {})
+                        if not next_episode:
+                            continue
+
+                        current_episode = next_episode.get('episode', 0)
+                        if current_episode and current_episode > sub['episodes']:
+                            embed = discord.Embed(
+                                title="🎬 New Episode Available!",
+                                description=f"Episode {current_episode} of {anime_data['title']['romaji']} is now available!",
+                                color=discord.Color.green()
+                            )
+
+                            if anime_data['title'].get('english'):
+                                embed.add_field(
+                                    name="English Title",
+                                    value=anime_data['title']['english'],
+                                    inline=True
+                                )
+
+                            if anime_data.get('nextAiringEpisode'):
+                                embed.add_field(
+                                    name="Next Episode",
+                                    value=anilist.format_airing_info(anime_data['nextAiringEpisode']),
+                                    inline=False
+                                )
+
+                            if anime_data.get('coverImage', {}).get('medium'):
+                                embed.set_thumbnail(url=anime_data['coverImage']['medium'])
+
+                            await set_donator_footer(embed, channel.guild.id)
+                            await channel.send(embed=embed)
+                            await db.update_episodes(sub['id'], current_episode)
+
+                    except Exception as e:
+                        print(f"Error processing anime {sub['id']}: {str(e)}")
+                        continue
+
+            except Exception as e:
+                print(f"Error processing channel {channel_id}: {str(e)}")
                 continue
 
-            current_episodes = sub.get('episodes', 0)
-            latest_episodes = 0
+    except Exception as e:
+        print(f"Error in check_new_episodes: {str(e)}")
 
-            if anime_data.get('episodes') is not None:
-                latest_episodes = anime_data.get('episodes')
-            elif anime_data.get('nextAiringEpisode') is not None:
-                latest_episodes = anime_data.get('nextAiringEpisode', {}).get('episode', 1) - 1
-
-            if latest_episodes > current_episodes:
-                await db.update_episodes(sub['id'], latest_episodes)
-                
-                channel = bot.get_channel(int(channel_id))
-                if channel:
-                    embed = anilist.get_episode_update_embed(anime_data, latest_episodes)
-                    await channel.send(embed=discord.Embed.from_dict(embed))
+@bot.tree.command(name='donator_status', description='Check the donator status of this server')
+async def donator_status(interaction: discord.Interaction):
+    is_donator = await is_donator_guild(interaction.guild_id)
+    
+    embed = discord.Embed(
+        title="Donator Status",
+        description="Here's your server's donator status:",
+        color=discord.Color.blue() if is_donator else discord.Color.light_grey()
+    )
+    
+    if is_donator:
+        embed.add_field(
+            name="✨ Donator Benefits Active",
+            value="Thank you for supporting Aira!\n• Real-time notifications every minute\n• Donator server badge on all bot messages\n• More coming soon!",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Free Plan",
+            value="This server is using the free plan.\n• Notifications every 10 minutes\n\nBecome a donator for:\n• Real-time notifications every minute\n• Donator server badge on all bot messages",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
 
 bot.run(TOKEN) 
