@@ -67,6 +67,100 @@ async def set_donator_footer(embed: discord.Embed, guild_id: int):
     if is_donator:
         embed.set_footer(text="✨ Donator Server")
 
+class AnimeListPaginator(discord.ui.View):
+    def __init__(self, subscriptions: list, anime_data_list: list, per_page: int = 5):
+        super().__init__(timeout=30)
+        self.subscriptions = subscriptions
+        self.anime_data_list = anime_data_list
+        self.per_page = per_page
+        self.current_page = 0
+        self.total_pages = max(1, (len(subscriptions) + per_page - 1) // per_page)
+        
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.first_page_button.disabled = self.current_page == 0
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        self.last_page_button.disabled = self.current_page >= self.total_pages - 1
+
+    def get_current_page_embed(self, guild_id: int) -> discord.Embed:
+        embed = discord.Embed(
+            title="📺 Channel Subscriptions",
+            description=f"Page {self.current_page + 1}/{self.total_pages}",
+            color=discord.Color.blue()
+        )
+
+        start_idx = self.current_page * self.per_page
+        end_idx = min(start_idx + self.per_page, len(self.subscriptions))
+
+        for i in range(start_idx, end_idx):
+            sub = self.subscriptions[i]
+            anime_data = self.anime_data_list[i]
+            
+            if anime_data:
+                english_title = anime_data['title'].get('english')
+                romaji_title = anime_data['title'].get('romaji', '')
+                
+                if english_title:
+                    base_title = english_title
+                    if "Season" not in english_title and "Part" not in english_title:
+                        if "Season" in romaji_title or "Part" in romaji_title or "2nd" in romaji_title:
+                            base_title = f"{english_title} Season {romaji_title.split('Season')[-1].strip()}"
+                    display_title = f"{base_title} ({romaji_title})"
+                else:
+                    display_title = romaji_title
+
+                value_parts = []
+                
+                if anime_data.get('episodes'):
+                    value_parts.append(f"Episodes: {sub['episodes']}/{anime_data['episodes']}")
+                
+                if anime_data.get('nextAiringEpisode'):
+                    value_parts.append(anilist.format_airing_info(anime_data['nextAiringEpisode']))
+                elif anime_data.get('status') == 'FINISHED':
+                    value_parts.append("Series completed")
+                
+                embed.add_field(
+                    name=display_title,
+                    value="\n".join(value_parts) or "No airing information available",
+                    inline=False
+                )
+
+        return embed
+
+    @discord.ui.button(label="≪", style=discord.ButtonStyle.grey)
+    async def first_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = 0
+        self.update_buttons()
+        embed = self.get_current_page_embed(interaction.guild_id)
+        await set_donator_footer(embed, interaction.guild_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = max(0, self.current_page - 1)
+        self.update_buttons()
+        embed = self.get_current_page_embed(interaction.guild_id)
+        await set_donator_footer(embed, interaction.guild_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        self.update_buttons()
+        embed = self.get_current_page_embed(interaction.guild_id)
+        await set_donator_footer(embed, interaction.guild_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="≫", style=discord.ButtonStyle.grey)
+    async def last_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = self.total_pages - 1
+        self.update_buttons()
+        embed = self.get_current_page_embed(interaction.guild_id)
+        await set_donator_footer(embed, interaction.guild_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
@@ -136,7 +230,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
             max_values=1,
             options=[
                 discord.SelectOption(
-                    label=f"{anime['title']['romaji'][:100]}",
+                    label=self._format_select_label(anime),
                     description=f"Episodes: {anime.get('episodes', '?')} | Score: {anime.get('averageScore', '?')}",
                     value=str(anime['id'])
                 )
@@ -211,39 +305,34 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
         view.add_item(select)
         await interaction.followup.send("Multiple anime found. Please select one:", view=view)
 
+def _format_select_label(self, anime: dict) -> str:
+    english_title = anime['title'].get('english')
+    romaji_title = anime['title'].get('romaji', '')
+    
+    if english_title:
+        base_title = english_title
+        if "Season" not in english_title and "Part" not in english_title:
+            if "Season" in romaji_title or "Part" in romaji_title or "2nd" in romaji_title:
+                base_title = f"{english_title} Season {romaji_title.split('Season')[-1].strip()}"
+        display_title = f"{base_title} ({romaji_title})"
+    else:
+        display_title = romaji_title
+    
+    return display_title[:100]
+
 @bot.tree.command(name='list', description='Lists all anime subscriptions in this channel.')
 async def list_anime(interaction: discord.Interaction):
     channel_id = str(interaction.channel.id)
     subscriptions = await db.get_channel_subscriptions(channel_id)
     
     if subscriptions:
-        embed = discord.Embed(
-            title="📺 Channel Subscriptions",
-            description="Here are the current anime subscriptions for this channel:",
-            color=discord.Color.blue()
-        )
-
-        for sub in subscriptions:
-            anime_data = anilist.get_anime_details(sub['id'])
-            if anime_data:
-                value_parts = []
-                
-                if anime_data.get('episodes'):
-                    value_parts.append(f"Episodes: {sub['episodes']}/{anime_data['episodes']}")
-                
-                if anime_data.get('nextAiringEpisode'):
-                    value_parts.append(anilist.format_airing_info(anime_data['nextAiringEpisode']))
-                elif anime_data.get('status') == 'FINISHED':
-                    value_parts.append("Series completed")
-                
-                embed.add_field(
-                    name=anime_data['title']['romaji'],
-                    value="\n".join(value_parts) or "No airing information available",
-                    inline=False
-                )
-
+        anime_data_list = [anilist.get_anime_details(sub['id']) for sub in subscriptions]
+        
+        paginator = AnimeListPaginator(subscriptions, anime_data_list)
+        
+        embed = paginator.get_current_page_embed(interaction.guild_id)
         await set_donator_footer(embed, interaction.guild_id)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, view=paginator)
     else:
         await interaction.response.send_message(
             "This channel has no anime subscriptions.",
