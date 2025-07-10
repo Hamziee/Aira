@@ -107,7 +107,10 @@ class AnimeListPaginator(discord.ui.View):
                     if "Season" not in english_title and "Part" not in english_title:
                         if "Season" in romaji_title or "Part" in romaji_title or "2nd" in romaji_title:
                             base_title = f"{english_title} Season {romaji_title.split('Season')[-1].strip()}"
-                    display_title = f"{base_title} ({romaji_title})"
+                    if romaji_title.lower() != english_title.lower():
+                        display_title = f"{base_title} ({romaji_title})"
+                    else:
+                        display_title = base_title
                 else:
                     display_title = romaji_title
 
@@ -160,6 +163,24 @@ class AnimeListPaginator(discord.ui.View):
         embed = self.get_current_page_embed(interaction.guild_id)
         await set_donator_footer(embed, interaction.guild_id)
         await interaction.response.edit_message(embed=embed, view=self)
+
+def _format_select_label(anime: dict) -> str:
+    english_title = anime['title'].get('english')
+    romaji_title = anime['title'].get('romaji', '')
+    
+    if english_title:
+        base_title = english_title
+        if "Season" not in english_title and "Part" not in english_title:
+            if "Season" in romaji_title or "Part" in romaji_title or "2nd" in romaji_title:
+                base_title = f"{english_title} Season {romaji_title.split('Season')[-1].strip()}"
+        if romaji_title.lower() != english_title.lower():
+            display_title = f"{base_title} ({romaji_title})"
+        else:
+            display_title = base_title
+    else:
+        display_title = romaji_title
+    
+    return display_title[:100]
 
 @bot.event
 async def on_ready():
@@ -230,7 +251,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
             max_values=1,
             options=[
                 discord.SelectOption(
-                    label=self._format_select_label(anime),
+                    label=_format_select_label(anime),
                     description=f"Episodes: {anime.get('episodes', '?')} | Score: {anime.get('averageScore', '?')}",
                     value=str(anime['id'])
                 )
@@ -304,21 +325,6 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
         view = discord.ui.View()
         view.add_item(select)
         await interaction.followup.send("Multiple anime found. Please select one:", view=view)
-
-def _format_select_label(self, anime: dict) -> str:
-    english_title = anime['title'].get('english')
-    romaji_title = anime['title'].get('romaji', '')
-    
-    if english_title:
-        base_title = english_title
-        if "Season" not in english_title and "Part" not in english_title:
-            if "Season" in romaji_title or "Part" in romaji_title or "2nd" in romaji_title:
-                base_title = f"{english_title} Season {romaji_title.split('Season')[-1].strip()}"
-        display_title = f"{base_title} ({romaji_title})"
-    else:
-        display_title = romaji_title
-    
-    return display_title[:100]
 
 @bot.tree.command(name='list', description='Lists all anime subscriptions in this channel.')
 async def list_anime(interaction: discord.Interaction):
