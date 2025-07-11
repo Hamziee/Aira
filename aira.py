@@ -214,7 +214,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
             channel_id=channel_id,
             anime_id=anime['id'],
             title=anime['title']['romaji'],
-            episodes=anime.get('episodes', 0)
+            episodes=anime.get('nextAiringEpisode', {}).get('episode', 0) - 1 if anime.get('nextAiringEpisode') else anime.get('episodes', 0)
         )
 
         embed = discord.Embed(
@@ -278,7 +278,7 @@ async def subscribe(interaction: discord.Interaction, anime_name: str):
                     channel_id=channel_id,
                     anime_id=selected_anime['id'],
                     title=selected_anime['title']['romaji'],
-                    episodes=selected_anime.get('episodes', 0)
+                    episodes=selected_anime.get('nextAiringEpisode', {}).get('episode', 0) - 1 if selected_anime.get('nextAiringEpisode') else selected_anime.get('episodes', 0)
                 )
 
                 embed = discord.Embed(
