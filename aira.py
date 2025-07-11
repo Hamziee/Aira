@@ -117,7 +117,11 @@ class AnimeListPaginator(discord.ui.View):
                 value_parts = []
                 
                 if anime_data.get('episodes'):
-                    value_parts.append(f"Episodes: {sub['episodes']}/{anime_data['episodes']}")
+                    if anime_data.get('nextAiringEpisode'):
+                        next_ep = anime_data['nextAiringEpisode']['episode']
+                        value_parts.append(f"Episodes: {next_ep-1}/{anime_data['episodes']}")
+                    else:
+                        value_parts.append(f"Episodes: {anime_data['episodes']}/{anime_data['episodes']}")
                 
                 if anime_data.get('nextAiringEpisode'):
                     value_parts.append(anilist.format_airing_info(anime_data['nextAiringEpisode']))
@@ -455,7 +459,10 @@ async def check_new_episodes():
                             continue
 
                         current_episode = next_episode.get('episode', 0)
-                        if current_episode and current_episode > sub['episodes']:
+                        airing_at = next_episode.get('airingAt', 0)
+                        current_time = int(time.time())
+                        
+                        if current_episode and current_episode > sub['episodes'] and current_time > airing_at:
                             embed = discord.Embed(
                                 title="🎬 New Episode Available!",
                                 description=f"Episode {current_episode} of {anime_data['title']['romaji']} is now available!",
